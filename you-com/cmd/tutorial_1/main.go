@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -30,6 +31,14 @@ type QuestionAnswer struct {
 type NewChatRequest struct {
 	UserId    string `json:"userId"`
 	ChatTitle string `json:"chatTitle"`
+}
+
+type AnswerRequest struct {
+	Question string `json:"question"`
+}
+
+type AnswerResponse struct {
+	Answer string `json:"answer"`
 }
 
 type ChatsRequest struct {
@@ -136,6 +145,55 @@ func chatsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func chatAnswerHandler(username string, w http.ResponseWriter, r *http.Request) {
+	// /chats/{chatId}/answer
+	path := strings.TrimPrefix(r.URL.Path, "/chats/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[1] != "answer" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	chatUuid := parts[0]
+	storeMu.Lock()
+	userChats := chatStore[username]
+	_, exists := userChats[chatUuid]
+	storeMu.Unlock()
+	if !exists {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(ErrorResponse{
+			Errors: []APIError{{ErrorCode: 404, ErrorStr: "Chat not found"}},
+		})
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	var req AnswerRequest
+	body, _ := ioutil.ReadAll(r.Body)
+	if err := json.Unmarshal(body, &req); err != nil || req.Question == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(ErrorResponse{
+			Errors: []APIError{{ErrorCode: 400, ErrorStr: "Missing or invalid question or answer"}},
+		})
+		return
+	}
+
+	status, ans := fetchAnswer(w, username, chatUuid, req.Question)
+
+	if status != "200" {
+		s, _ := strconv.Atoi(status)
+		w.WriteHeader(s)
+		json.NewEncoder(w).Encode(ErrorResponse{
+			Errors: []APIError{{ErrorCode: 400, ErrorStr: ans}},
+		})
+		return
+	}
+	a := AnswerResponse{Answer: ans}
+	json.NewEncoder(w).Encode(a)
+}
+
 func chatByIDHandler(w http.ResponseWriter, r *http.Request) {
 	username, authErr := basicAuth(r)
 	if authErr != nil {
@@ -144,6 +202,12 @@ func chatByIDHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chatUuid := strings.TrimPrefix(r.URL.Path, "/chats/")
+
+	if strings.HasSuffix(r.URL.Path, "/answer") {
+		chatAnswerHandler(username, w, r)
+		return
+	}
+
 	storeMu.Lock()
 	defer storeMu.Unlock()
 	chatS, exists := chatStore[username][chatUuid]
