@@ -108,16 +108,46 @@ func chatsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch r.Method {
+
+	// GET /chats
+	//		Return chats associated with a user
+	//		pagination: offset, limit
+	//		filter: By Chat title
 	case http.MethodGet:
+		offsetStr := r.URL.Query().Get("offset")
+		limitStr := r.URL.Query().Get("limit")
+		titleFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("title")))
+
+		offset, _ := strconv.Atoi(offsetStr)
+		limit, _ := strconv.Atoi(limitStr)
+		if limit <= 0 {
+			limit = 10
+		}
 		storeMu.Lock()
 		defer storeMu.Unlock()
 		userChats := chatStore[username]
-		chats := make([]Chat, 0, len(userChats))
+		filtered := make([]Chat, 0, len(userChats))
 		for _, c := range userChats {
-			chats = append(chats, c)
+			if titleFilter == "" || strings.Contains(strings.ToLower(c.ChatTitle), titleFilter) {
+				filtered = append(filtered, c)
+			}
 		}
-		json.NewEncoder(w).Encode(chats)
+		end := offset + limit
+		if offset > len(filtered) {
+			offset = len(filtered)
+		}
+		if end > len(filtered) {
+			end = len(filtered)
+		}
+		result := filtered[offset:end]
+		json.NewEncoder(w).Encode(result)
 
+	// POST /chats
+	//		Create a new Chat.
+	//		Chat is created based on Chat Title
+	//		When a chat is created a UUID is created for the chat
+	//		A chat has a history of question, answer pair
+	//		Return Chat information which contains chat uuid
 	case http.MethodPost:
 		body, _ := ioutil.ReadAll(r.Body)
 		var req NewChatRequest
@@ -143,12 +173,13 @@ func chatsHandler(w http.ResponseWriter, r *http.Request) {
 			chats = make(map[string]Chat)
 		}
 		chatUuid := generateUUID()
-		chatS := Chat{UserId: username, ChatTitle: req.ChatTitle, ChatId: chatUuid, QuestionAnswers: nil}
+		tag := generateUUID()
+		chatS := Chat{UserId: username, ChatTitle: req.ChatTitle, ChatId: chatUuid, QuestionAnswers: nil, Tag: tag}
 		chats[chatUuid] = chatS
 		chatStore[username] = chats
+		chatTitleToChat = chats
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(chatS)
-
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
@@ -211,12 +242,16 @@ func chatByIDHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	chatUuid := strings.TrimPrefix(r.URL.Path, "/chats/")
-
+	// POST /chats/{chatUuid}/answer
+	//		Allows getting an answer for a question
+	//			All the question and answers in this chat (with {chatUuid} is
+	//			used a context)
+	//		Return the answer for a question asked in context of chat with
+	// 			id {chatUuid}
 	if strings.HasSuffix(r.URL.Path, "/answer") {
 		chatAnswerHandler(username, w, r)
 		return
 	}
-
 	storeMu.Lock()
 	defer storeMu.Unlock()
 	chatS, exists := chatStore[username][chatUuid]
@@ -228,8 +263,15 @@ func chatByIDHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.Method {
+	// GET /chats/{chatUuid}
+	//		Return chat with id {chatUuid}
 	case http.MethodGet:
 		json.NewEncoder(w).Encode(chatS)
+	// PATCH /chats/{chatUuid}
+	//		Allows changing the title of a Chat
+	//		Ensure that the chat is changed only of tag matches. This is done
+	//			to take care of concurrent read-modify-write operation.
+	//		Return the changed chat with id {chatUuid}
 	case http.MethodPatch:
 		var req ChatsRequest
 		body, _ := ioutil.ReadAll(r.Body)
@@ -248,9 +290,15 @@ func chatByIDHandler(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		ot := chatS.ChatTitle
 		chatS.ChatTitle = req.ChatTitle
 		chatStore[username][chatUuid] = chatS
+		delete(chatTitleToChat, ot)
+		chatTitleToChat[req.ChatTitle] = chatS
 		json.NewEncoder(w).Encode(chatS)
+	// DELETE /chats/{chatUuid}
+	//		Allows deleting a chat
+	//		Return no content
 	case http.MethodDelete:
 		tag := r.Header.Get("tag")
 		if chatS.Tag != tag {
@@ -271,9 +319,9 @@ func fetchAnswer(w http.ResponseWriter, username string, chatUuid string, questi
 	url := "https://chat-api.you.com/smart"
 	apiKey := "e7e0734b-98e5-468e-ba0e-0ac800088746<__>1QwX5qETU8N2v5f4zKakO3rt"
 
-	defer storeMu.Unlock()
+	storeMu.Lock()
 	chats, exists := chatStore[username][chatUuid]
-
+	storeMu.Unlock()
 	if !exists {
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(ErrorResponse{
@@ -315,6 +363,13 @@ func fetchAnswer(w http.ResponseWriter, username string, chatUuid string, questi
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+
+	storeMu.Lock()
+	chats = chatStore[username][chatUuid]
+	a := QuestionAnswer{Question: question, Answer: string(body)}
+	chats.QuestionAnswers = append(chats.QuestionAnswers, a)
+	chatStore[username][chatUuid] = chats
+	storeMu.Unlock()
 	return resp.Status, string(body)
 }
 
