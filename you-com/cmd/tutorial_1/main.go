@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
@@ -223,8 +224,10 @@ func chatAnswerHandler(username string, w http.ResponseWriter, r *http.Request) 
 	status, ans := fetchAnswer(w, username, chatUuid, req.Question)
 
 	if status != "200" {
-		s, _ := strconv.Atoi(status)
-		w.WriteHeader(s)
+		fmt.Println(status)
+		var code int
+		fmt.Sscanf(status, "%d", &code)
+		w.WriteHeader(code)
 		json.NewEncoder(w).Encode(ErrorResponse{
 			Errors: []APIError{{ErrorCode: 400, ErrorStr: ans}},
 		})
@@ -294,6 +297,7 @@ func chatByIDHandler(w http.ResponseWriter, r *http.Request) {
 		chatS.ChatTitle = req.ChatTitle
 		chatStore[username][chatUuid] = chatS
 		delete(chatTitleToChat, ot)
+		chatS.Tag = generateUUID()
 		chatTitleToChat[req.ChatTitle] = chatS
 		json.NewEncoder(w).Encode(chatS)
 	// DELETE /chats/{chatUuid}
@@ -309,6 +313,7 @@ func chatByIDHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		delete(chatStore[username], chatUuid)
+		fmt.Println(chatStore)
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
