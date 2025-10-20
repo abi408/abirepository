@@ -63,6 +63,7 @@ var (
 	chatStore       = make(map[string]map[string]Chat)
 	chatTitleToChat = make(map[string]Chat)
 	storeMu         sync.Mutex
+	users           = [2]string{"abi", "abraham"}
 )
 
 func basicAuth(r *http.Request) (string, *APIError) {
@@ -79,8 +80,16 @@ func basicAuth(r *http.Request) (string, *APIError) {
 		return "", &APIError{ErrorCode: 401, ErrorStr: "Malformed Authorization payload"}
 	}
 	username, password := parts[0], parts[1]
-	// Demo fixed credentials
 	if username == "" || password != "secret" {
+		return "", &APIError{ErrorCode: 401, ErrorStr: "Invalid username or password"}
+	}
+	found := false
+	for _, value := range users {
+		if value == username {
+			found = true
+		}
+	}
+	if !found {
 		return "", &APIError{ErrorCode: 401, ErrorStr: "Invalid username or password"}
 	}
 	return username, nil
